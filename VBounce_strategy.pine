@@ -62,6 +62,12 @@ var entry_sent_amount = 0
 var float lastEntryTrailingPrice = na
 var float lastExitTrailingPrice = na
 
+// Message counting
+var int entryUpdateCount = 0
+var int exitUpdateCount = 0
+var int totalMessagesCount = 0
+var int positionMessageCount = 0
+
 // Pivot Detection Parameters
 pivotLegs = input.int(5, "Pivot Legs", minval=3, maxval=200,
    tooltip="Number of bars to look back/forward for pivot detection")
@@ -95,6 +101,10 @@ if positionClosed
     oco_order_id := 0
     exit_trail_order_id := 0
     trailingExitWebhookSent := false
+    // Reset message counters
+    entryUpdateCount := 0
+    exitUpdateCount := 0
+    positionMessageCount := 0
 
 // Update inPosition variable
 // inPosition := strategy.position_size > 0
@@ -211,6 +221,8 @@ if sendEntryWebhook
       '}'
     entry_order_id := webhookAlert.sendMessage(jsonMessage)
     entry_sent_amount := entry_sent_amount + 1
+    positionMessageCount := positionMessageCount + 1
+    totalMessagesCount := totalMessagesCount + 1
     // Update flags
     plotEntryWebhookCall := true
     sendEntryWebhook := false
@@ -238,6 +250,8 @@ if sendOCOWebhook
      ', "stop_price": ' + str.tostring(stopLossPrice) +
      '}'
     oco_order_id := webhookAlert.sendMessage(jsonMessage)
+    positionMessageCount := positionMessageCount + 1 
+    totalMessagesCount := totalMessagesCount + 1
     // Update flags
     plotOCOWebhookCall := true
     sendOCOWebhook := false
@@ -253,6 +267,8 @@ if sendTrailingExitWebhook
     webhookAlert.sendMessage(jsonMessage)
    // Send a second time to cancel the second order (Then the LIMIT) with the same ID
     webhookAlert.sendMessage(jsonMessage)
+    positionMessageCount := positionMessageCount + 2  // 2 cancel messages
+    totalMessagesCount := totalMessagesCount + 2
 
     action := 'sell'
     quantity := position_size
@@ -265,6 +281,8 @@ if sendTrailingExitWebhook
        ', "price": ' + str.tostring(close - exitTrailingDelta) +
        '}'
     exit_trail_order_id := webhookAlert.sendMessage( jsonMessage )
+    positionMessageCount := positionMessageCount + 1  // 1 new order
+    totalMessagesCount := totalMessagesCount + 1
     // Update flags
     plotExitTrailingWebhokCall := true
     sendTrailingExitWebhook := false
@@ -312,42 +330,54 @@ plotExitTrailingWebhokCall := false
 
 msg = "Status:"
 msg := msg + 
-   "\n Last Peak Price: " + str.tostring(lastPeakPrice) +
+   "\n =================== State ===================" +
    "\n Entry Condition: " + str.tostring(entryCondition) +
    "\n In Entry Trail: " + str.tostring(inEntryTrail) +
+   "\n In Position: " + str.tostring(inPosition) +
+   "\n Position Closed: " + str.tostring(positionClosed) +
    "\n -------------------------------------------" +
-   "\n Entry TrailStop" + str.tostring(inEntryTrail? "":" Offset ") + " Price:" + str.tostring(entryTrailingOffsetPrice) +
-   "\n Entry Trailing Delta: " + str.tostring(entryTrailingDelta) +
+   "\n ================= Entry Stage ==============" +
+   "\n Last Peak Price: " + str.tostring(lastPeakPrice) +
+   "\n Entry TrailStop Price: " + str.tostring(entryTrailingOffsetPrice) +
+   "\n Current Limit Price: " + str.tostring(lastEntryTrailingPrice) +
+   "\n Trailing Delta: " + str.tostring(entryTrailingDelta) +
+   "\n Position Size: " + str.tostring(position_size, '#.###') + " contracts" +
+   "\n Entry Price: " + str.tostring(entryPrice) +
    "\n -------------------------------------------" +
-   "\n- Positon size: " + str.tostring(strategy.position_size) +
-   "\n- Entry Price: " + str.tostring(entryPrice) +
-   "\n- Exit: Profit Target Price: " + str.tostring(profitPrice) +
-   "\n- Exit: TrailStop Target Price: " + str.tostring(trail_stop_target_price) +
-   "\n- Exit: Trail Offset Price: " + str.tostring(trail_stop_target_price - exitTrailingDelta) +
-   "\n- Exit: Trail Offset Delta: " + str.tostring(exitTrailingDelta) +
-   "\n- Exit: Stop Loss Price: " + str.tostring(stopLossPrice) +
+   "\n ================= Exit Stage ===============" +
+   "\n Take Profit: " + str.tostring(profitPrice) +
+   "\n Stop Loss: " + str.tostring(stopLossPrice) +
+   "\n Trail Target: " + str.tostring(trail_stop_target_price) +
+   "\n Current Limit Price: " + str.tostring(lastExitTrailingPrice) +
+   "\n Trailing Delta: " + str.tostring(exitTrailingDelta) +
    "\n -------------------------------------------" +
+   "\n ================ Messages =================" +
+   "\n Entry Updates: " + str.tostring(entryUpdateCount) +
+   "\n Exit Updates: " + str.tostring(exitUpdateCount) +
+   "\n Current Position Total: " + str.tostring(positionMessageCount) +
+   "\n All-Time Total: " + str.tostring(totalMessagesCount) +
+   "\n -------------------------------------------" +
+   "\n ================ Orders ===================" +
    "\n Entry Order ID: " + str.tostring(entry_order_id) +
-   "\n Entry Sent #: " + str.tostring(entry_sent_amount) +
+   "\n Entry Messages Sent: " + str.tostring(entry_sent_amount) +
    "\n OCO Order ID: " + str.tostring(oco_order_id) +
-   "\n Exit Order ID: " + str.tostring(exit_trail_order_id) +    
+   "\n Exit Trail Order ID: " + str.tostring(exit_trail_order_id) +    
    "\n -------------------------------------------" +
-   "\n Initial capital: " + str.tostring(strategy.initial_capital) +
-   "\n Position-Closed: " + str.tostring(positionClosed) +
-   "\n Equity: " + str.tostring(strategy.equity) +
-   "\n Next Position (Contracts): " + str.tostring(position_size, '#.###') +
-   "\n -------------------------------------------" +
-   "\n JSON new" + 
+   "\n ================ Capital =================" +
+   "\n Initial Capital: " + str.tostring(strategy.initial_capital) +
+   "\n Current Equity: " + str.tostring(strategy.equity) +
+   "\n ===========================================" +
+   "\n Last Message:" + 
    "\n " + jsonMessage +
    "\n ===========================================" +
-   "\n TrailingVBounce V3.2.1 "
+   "\n TrailingVBounce V3.2.2 "
 
 // Set text color based on current bar
 textColor = (bar_index == ta.highest(bar_index, 1)) ? color.white : color.gray
 
 // Calculate the price range
 priceRange = ta.highest(high, 200) - ta.lowest(low, 200)
-topPosition = ta.lowest(low, 200) - (priceRange * 0.5)
+topPosition = ta.lowest(low, 200) - (priceRange * 0.1)
 
 // Update or create the label
 var label myLabel = na
@@ -357,4 +387,3 @@ else
     label.set_xy(myLabel, bar_index - 50, topPosition)
     label.set_text(myLabel, msg)
     label.set_textcolor(myLabel, textColor)
-
