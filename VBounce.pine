@@ -48,6 +48,8 @@ var bool sendEntryWebhook = false
 var bool sendOCOWebhook = false
 var bool sendTrailingExitWebhook = false
 var bool trailingExitWebhookSent = false
+var bool sendEntryUpdateWebhook = false
+var bool sendExitUpdateWebhook = false
 
 var bool plotEntryWebhookCall = false
 var bool plotOCOWebhookCall = false
@@ -57,6 +59,8 @@ var entry_order_id = 0
 var int oco_order_id = 0
 var exit_trail_order_id = 0
 var entry_sent_amount = 0
+var float lastEntryTrailingPrice = na
+var float lastExitTrailingPrice = na
 
 // Pivot Detection Parameters
 pivotLegs = input.int(5, "Pivot Legs", minval=3, maxval=200,
@@ -122,20 +126,25 @@ entryCondition = not na(lastPeakPrice) and withinDateRange and
 
 // Track trailing entry logic
 if inEntryTrail or (entryCondition and not inPosition)
-
     // Mock the TrailingStop in TradingView (TView does not support entry/buy of type TrailingStop) 
     if not inEntryTrail
         entryTrailingOffsetPrice := close * (1 + entryTrailingOffset / 100)
         entryTrailingDelta := close * (entryTrailingOffset / 100)
         inEntryTrail := true
         position_size := (strategy.initial_capital + strategy.netprofit)/entryTrailingOffsetPrice
-    
-        // Flag to send the TrailinStop order
+        lastEntryTrailingPrice := entryTrailingOffsetPrice
+        
+        // Flag to send the initial limit order
         sendEntryWebhook := true
         
     else
         // Update trailing price to follow the lowest price during the trail
         entryTrailingOffsetPrice := math.min(entryTrailingOffsetPrice[1], close * (1 + entryTrailingOffset / 100))
+        
+        // Flag to update limit order price if changed
+        if entryTrailingOffsetPrice != lastEntryTrailingPrice
+            sendEntryUpdateWebhook := true
+            lastEntryTrailingPrice := entryTrailingOffsetPrice
         
         // Trigger entry when price crosses the trailing offset price upward
         if entryTrailingOffsetPrice > 0 and close >= entryTrailingOffsetPrice
@@ -144,47 +153,34 @@ if inEntryTrail or (entryCondition and not inPosition)
             inPosition := true     // Set position flag immediately
 
             entryPrice := entryTrailingOffsetPrice
-
             profitPrice := entryPrice * (1 + profitTarget/100)
             stopLossPrice := entryPrice * (1 - stopLossPercent/100)
-            //exitTrailingDelta := entryPrice * (trailOffsetPercent/100)
-                //entryTrailingOffsetPrice := na
 
             strategy.exit("Exit", "VBounce",
                limit=profitPrice,
                stop=stopLossPrice, 
                trail_points=percentToPoints(trailStopTarget), // Activate trail at profit target
                trail_offset=percentToPoints(trailOffsetPercent) // Trail follows at offset %
-                // loss=percentToPoints(stopLossPercent) // Exit immediately if price drops below stop-loss
                )
 
             // Calculate the trailing stop target price based on entry price and trailing offset
             if na(trail_stop_target_price)
                 trail_stop_target_price := entryPrice * (1 + trailStopTarget / 100)
                 exitTrailingDelta := trail_stop_target_price * (trailOffsetPercent/100)
+                lastExitTrailingPrice := na
 
             // Flag to send the OCO order, once the trailing stop executes (aprox.) We are mocking it
             sendOCOWebhook := true
-    
 
-// else if inPosition
-//     profitPrice := entryPrice * (1 + profitTarget/100)
-//     stopLossPrice := entryPrice * (1 - stopLossPercent/100)
-//     exitTrailingDelta := entryPrice * (trailOffsetPercent/100)
-//         //entryTrailingOffsetPrice := na
+// Monitor for exit trailing updates
+if inPosition and close >= trail_stop_target_price
+    exitTrailPrice = close - exitTrailingDelta
+    if exitTrailPrice != nz(lastExitTrailingPrice)
+        sendExitUpdateWebhook := true
+        lastExitTrailingPrice := exitTrailPrice
 
-//     strategy.exit("Exit", "VBounce",
-//        limit=profitPrice,
-//        stop=stopLossPrice, 
-//        trail_points=percentToPoints(trailStopTarget), // Activate trail at profit target
-//        trail_offset=percentToPoints(trailOffsetPercent) // Trail follows at offset %
-//      // loss=percentToPoints(stopLossPercent) // Exit immediately if price drops below stop-loss
-//      )
-
-//     // Calculate the trailing stop target price based on entry price and trailing offset
-//     if na(trail_stop_target_price)
-//         trail_stop_target_price := entryPrice * (1 + trailStopTarget / 100)
-
+    if not trailingExitWebhookSent
+        sendTrailingExitWebhook := true
 
 // Alerts Configuration - Bot Webhook 
 
@@ -199,31 +195,37 @@ order_type = "_define_"
 var jsonMessage = '{"txt":"msg"}'
 
 // Alert Configuration - Bot Webhook format
-// buy market order
+// Initial buy limit order (mock trailing stop)
 if sendEntryWebhook 
     action := 'buy'
-    order_type := 'trailing_stop'
+    order_type := 'limit'
     // Quantity is (initial capital + profit)/entry_trailStop_price
     // Remember the quantity is the amount of Contracts (not USD)
     quantity := position_size
-    trailing_delta := entryTrailingDelta
     jsonMessage := '{"strategy": "' + strategy_name + '"' +
       ', "symbol": "' + symbol + '"' +
       ', "action": "' + action + '"' +
       ', "quantity": ' + str.tostring(quantity, '#.###') +
       ', "order_type": "' + order_type + '"' +
-      ', "trailing_delta": ' + str.tostring(trailing_delta) +
+      ', "price": ' + str.tostring(entryTrailingOffsetPrice) +
       '}'
     entry_order_id := webhookAlert.sendMessage(jsonMessage)
     entry_sent_amount := entry_sent_amount + 1
     // Update flags
     plotEntryWebhookCall := true
     sendEntryWebhook := false
-    
 
-// TODO: Test if the entry_order has been executed
-// Create OCO order, the moment the TrailingStop buy is executed at entryPrice
-if entry_order_id and sendOCOWebhook
+// Update entry limit price
+if sendEntryUpdateWebhook
+    jsonMessage := '{"strategy": "' + strategy_name + '"' +
+      ', "client_order_id": ' + str.tostring(entry_order_id) +
+      ', "price": ' + str.tostring(entryTrailingOffsetPrice) +
+      '}'
+    webhookAlert.sendMessage(jsonMessage)
+    sendEntryUpdateWebhook := false
+
+// Create OCO order
+if sendOCOWebhook
     action := 'sell'
     order_type := 'oco'
     quantity := position_size
@@ -240,8 +242,9 @@ if entry_order_id and sendOCOWebhook
     plotOCOWebhookCall := true
     sendOCOWebhook := false
     
-if inPosition and close >= trail_stop_target_price and not trailingExitWebhookSent 
-    // Cancel OCO
+// Send Exit Limit (mock trailing stop)
+if sendTrailingExitWebhook
+    // Cancel OCO orders first
     jsonMessage := '{' +
       '"client_order_id": ' + str.tostring(oco_order_id) + 
       ', "cancel": true' +
@@ -250,25 +253,31 @@ if inPosition and close >= trail_stop_target_price and not trailingExitWebhookSe
     webhookAlert.sendMessage(jsonMessage)
    // Send a second time to cancel the second order (Then the LIMIT) with the same ID
     webhookAlert.sendMessage(jsonMessage)
-    // oco_order_id := 0   
 
-   // Send Trailing Exit
     action := 'sell'
     quantity := position_size
-    order_type := 'trailing_stop'
-    trailing_delta := exitTrailingDelta
-    jsonMessage := '{"strategy": "SteppedTrailing"' +
-       ', symbol": "' + symbol + '"' +
+    order_type := 'limit'
+    jsonMessage := '{"strategy": "' + strategy_name + '"' +
+       ', "symbol": "' + symbol + '"' +
        ', "action": "' + action + '"' +
        ', "quantity": '+ str.tostring(quantity, '#.###') +
        ', "order_type": "'+ order_type + '"' +
-       ', "trailing_delta": ' + str.tostring(trailing_delta) +
+       ', "price": ' + str.tostring(close - exitTrailingDelta) +
        '}'
     exit_trail_order_id := webhookAlert.sendMessage( jsonMessage )
     // Update flags
     plotExitTrailingWebhokCall := true
     sendTrailingExitWebhook := false
     trailingExitWebhookSent := true
+
+// Update exit limit price
+if sendExitUpdateWebhook
+    jsonMessage := '{"strategy": "' + strategy_name + '"' +
+       ', "client_order_id": ' + str.tostring(exit_trail_order_id) +
+       ', "price": ' + str.tostring(lastExitTrailingPrice) +
+       '}'
+    webhookAlert.sendMessage(jsonMessage)
+    sendExitUpdateWebhook := false
 
 // =================== Plotting ===================
 // Plot pivot points
@@ -331,7 +340,7 @@ msg := msg +
    "\n JSON new" + 
    "\n " + jsonMessage +
    "\n ===========================================" +
-   "\n TrailingVBounce V3.1.3 "
+   "\n TrailingVBounce V3.2.1 "
 
 // Set text color based on current bar
 textColor = (bar_index == ta.highest(bar_index, 1)) ? color.white : color.gray
@@ -349,6 +358,3 @@ else
     label.set_text(myLabel, msg)
     label.set_textcolor(myLabel, textColor)
 
-
-// =================== Alerts ===================
-// alertcondition(entryCondition, title="Entry Signal")
