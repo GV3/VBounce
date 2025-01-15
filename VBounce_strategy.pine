@@ -40,6 +40,7 @@ var float entryTrailingOffsetPrice = na
 var float entryTrailingDelta = na
 var float trail_stop_target_price = na
 var float exitTrailingDelta = na
+var float exitTrailPrice = na
 var float position_size = na
 
 
@@ -130,6 +131,16 @@ pivotLow = low[pivotLegs] == ta.lowest(low, 2 * pivotLegs + 1)
 if pivotHigh and withinDateRange
     lastPeakPrice := high[pivotLegs]
 
+// Monitor for exit trailing updates
+if inPosition and close >= trail_stop_target_price
+    exitTrailPrice := close - exitTrailingDelta
+    if exitTrailPrice != nz(lastExitTrailingPrice)
+        sendExitUpdateWebhook := true
+        lastExitTrailingPrice := exitTrailPrice
+
+    if not trailingExitWebhookSent
+        sendTrailingExitWebhook := true
+
 // Monitor for entry conditions
 entryCondition = not na(lastPeakPrice) and withinDateRange and
    percentFromHigh(close, lastPeakPrice) >= minStrength
@@ -155,6 +166,7 @@ if inEntryTrail or (entryCondition and not inPosition)
         if entryTrailingOffsetPrice != lastEntryTrailingPrice
             sendEntryUpdateWebhook := true
             lastEntryTrailingPrice := entryTrailingOffsetPrice
+            // strategy.entry("VBounce", strategy.long, qty = position_size, limit = entryTrailingOffsetPrice)
         
         // Trigger entry when price crosses the trailing offset price upward
         if entryTrailingOffsetPrice > 0 and close >= entryTrailingOffsetPrice
@@ -182,16 +194,6 @@ if inEntryTrail or (entryCondition and not inPosition)
             // Flag to send the OCO order, once the trailing stop executes (aprox.) We are mocking it
             sendOCOWebhook := true
 
-// Monitor for exit trailing updates
-if inPosition and close >= trail_stop_target_price
-    exitTrailPrice = close - exitTrailingDelta
-    if exitTrailPrice != nz(lastExitTrailingPrice)
-        sendExitUpdateWebhook := true
-        lastExitTrailingPrice := exitTrailPrice
-
-    if not trailingExitWebhookSent
-        sendTrailingExitWebhook := true
-
 // Alerts Configuration - Bot Webhook 
 
 // Define variables
@@ -208,7 +210,7 @@ var jsonMessage = '{"txt":"msg"}'
 // Initial buy limit order (mock trailing stop)
 if sendEntryWebhook 
     action := 'buy'
-    order_type := 'limit'
+    order_type := 'stop_limit'
     // Quantity is (initial capital + profit)/entry_trailStop_price
     // Remember the quantity is the amount of Contracts (not USD)
     quantity := position_size
@@ -216,8 +218,9 @@ if sendEntryWebhook
       ', "symbol": "' + symbol + '"' +
       ', "action": "' + action + '"' +
       ', "quantity": ' + str.tostring(quantity, '#.###') +
-      ', "order_type": "' + order_type + '"' +
       ', "price": ' + str.tostring(entryTrailingOffsetPrice) +
+      ', "price_aux_limit": ' + str.tostring(entryTrailingOffsetPrice) +
+      ', "order_type": "' + order_type + '"' +
       '}'
     entry_order_id := webhookAlert.sendMessage(jsonMessage)
     entry_sent_amount := entry_sent_amount + 1
@@ -232,6 +235,7 @@ if sendEntryUpdateWebhook
     jsonMessage := '{"strategy": "' + strategy_name + '"' +
       ', "client_order_id": ' + str.tostring(entry_order_id) +
       ', "price": ' + str.tostring(entryTrailingOffsetPrice) +
+      ', "price_aux_limit": ' + str.tostring(entryTrailingOffsetPrice) +
       '}'
     webhookAlert.sendMessage(jsonMessage)
     sendEntryUpdateWebhook := false
@@ -245,9 +249,9 @@ if sendOCOWebhook
      ', "symbol": "' + symbol + '"' +
      ', "action": "' + action + '"' +       
      ', "price": '+ str.tostring(profitPrice) +
+     ', "price_oco_stop": ' + str.tostring(stopLossPrice) +
      ', "quantity": '+ str.tostring(quantity, '#.###') +
      ', "order_type": "'+ order_type + '"' +
-     ', "stop_price": ' + str.tostring(stopLossPrice) +
      '}'
     oco_order_id := webhookAlert.sendMessage(jsonMessage)
     positionMessageCount := positionMessageCount + 1 
@@ -258,29 +262,32 @@ if sendOCOWebhook
     
 // Send Exit Limit (mock trailing stop)
 if sendTrailingExitWebhook
-    // Cancel OCO orders first
+   // Cancel OCO orders and send limit order atomically va Multi-op endpoint
+    // Create a new unique order ID for the exit Trail order
+    if exit_trail_order_id == 0
+        exit_trail_order_id := math.round(time * 10 / 1000) * 10
+             
     jsonMessage := '{' +
-      '"client_order_id": ' + str.tostring(oco_order_id) + 
-      ', "cancel": true' +
-      '}'
-   // Send Cancel OCO - to cancel 1 of the pairs (First the STOP)
-    webhookAlert.sendMessage(jsonMessage)
-   // Send a second time to cancel the second order (Then the LIMIT) with the same ID
-    webhookAlert.sendMessage(jsonMessage)
-    positionMessageCount := positionMessageCount + 2  // 2 cancel messages
-    totalMessagesCount := totalMessagesCount + 2
-
-    action := 'sell'
-    quantity := position_size
-    order_type := 'limit'
-    jsonMessage := '{"strategy": "' + strategy_name + '"' +
-       ', "symbol": "' + symbol + '"' +
-       ', "action": "' + action + '"' +
-       ', "quantity": '+ str.tostring(quantity, '#.###') +
-       ', "order_type": "'+ order_type + '"' +
-       ', "price": ' + str.tostring(close - exitTrailingDelta) +
-       '}'
-    exit_trail_order_id := webhookAlert.sendMessage( jsonMessage )
+     '"strategy": "' + strategy_name + '"' +
+     '"action": "multi",' +
+     '"operations": [' +
+       '{' +
+         '"group_id": ' + str.tostring(oco_order_id) + 
+         '"type": "cancel_multi"' +
+       '},' +
+       '{' +
+         '"type": "submit",' +
+         '"strategy": "' + strategy_name + '"' +
+         '"symbol": "' + symbol + '"' +
+         '"action": "sell",' +
+         '"amount": '+ str.tostring(quantity, '#.###') +
+         '"price": ' + str.tostring(exitTrailPrice) +
+         '"order_type": "limit",' +
+         '"client_order_id": ' + str.tostring(exit_trail_order_id) + 
+       '}' + 
+     ']'+
+     '}'
+   
     positionMessageCount := positionMessageCount + 1  // 1 new order
     totalMessagesCount := totalMessagesCount + 1
     // Update flags
@@ -370,7 +377,7 @@ msg := msg +
    "\n Last Message:" + 
    "\n " + jsonMessage +
    "\n ===========================================" +
-   "\n TrailingVBounce V3.2.2 "
+   "\n TrailingVBounce V3.3.1 "
 
 // Set text color based on current bar
 textColor = (bar_index == ta.highest(bar_index, 1)) ? color.white : color.gray
@@ -382,8 +389,8 @@ topPosition = ta.lowest(low, 200) - (priceRange * 0.1)
 // Update or create the label
 var label myLabel = na
 if (bar_index == 0)
-    myLabel := label.new(x=bar_index - 50, y=topPosition, text=msg, style=label.style_label_up, color=color.new(color.blue, 90), textcolor=textColor, size=size.normal)
+    myLabel := label.new(x=bar_index - 10, y=topPosition, text=msg, style=label.style_label_up, color=color.new(color.blue, 90), textcolor=textColor, size=size.normal)
 else
-    label.set_xy(myLabel, bar_index - 50, topPosition)
+    label.set_xy(myLabel, bar_index - 10, topPosition)
     label.set_text(myLabel, msg)
     label.set_textcolor(myLabel, textColor)
