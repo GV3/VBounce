@@ -5,7 +5,7 @@ strategy("TrailingVBounce V3", overlay=true,
    default_qty_value=100,
    calc_on_every_tick=true)
 
-import providencia_trading/WebhookAlertLibrary/3 as webhookAlert    
+import providencia_trading/WebhookAlertLibrary/4 as webhookAlert    
 
 // FIX: Entry trailing sent, and rise above the entry condition. Currently the webhook is sent, in TView the entry is not done. Fix
  
@@ -96,6 +96,8 @@ if positionClosed
     stopLossPrice := na
     profitPrice := na
     trail_stop_target_price := na
+    lastExitTrailingPrice := na
+    exitTrailingDelta := na
     inPosition := false
     inEntryTrail := false
     entry_order_id := 0
@@ -132,7 +134,7 @@ if pivotHigh and withinDateRange
     lastPeakPrice := high[pivotLegs]
 
 // Monitor for exit trailing updates
-if inPosition and close >= trail_stop_target_price
+if inPosition and close >= trail_stop_target_price 
     exitTrailPrice := close - exitTrailingDelta
     if exitTrailPrice != nz(lastExitTrailingPrice)
         sendExitUpdateWebhook := true
@@ -160,7 +162,7 @@ if inEntryTrail or (entryCondition and not inPosition)
         
     else
         // Update trailing price to follow the lowest price during the trail
-        entryTrailingOffsetPrice := math.min(entryTrailingOffsetPrice[1], close * (1 + entryTrailingOffset / 100))
+        entryTrailingOffsetPrice := math.min(entryTrailingOffsetPrice, close * (1 + entryTrailingOffset / 100))
         
         // Flag to update limit order price if changed
         if entryTrailingOffsetPrice != lastEntryTrailingPrice
@@ -282,12 +284,14 @@ if sendTrailingExitWebhook
          '"action": "sell",' +
          '"amount": '+ str.tostring(quantity, '#.###') +
          '"price": ' + str.tostring(exitTrailPrice) +
-         '"order_type": "limit",' +
+         '"price_aux_limit": ' + str.tostring(exitTrailPrice) +
+         '"order_type": "stop_limit",' +
          '"client_order_id": ' + str.tostring(exit_trail_order_id) + 
        '}' + 
      ']'+
      '}'
    
+    webhookAlert.sendMessage(jsonMessage)
     positionMessageCount := positionMessageCount + 1  // 1 new order
     totalMessagesCount := totalMessagesCount + 1
     // Update flags
@@ -300,6 +304,7 @@ if sendExitUpdateWebhook
     jsonMessage := '{"strategy": "' + strategy_name + '"' +
        ', "client_order_id": ' + str.tostring(exit_trail_order_id) +
        ', "price": ' + str.tostring(lastExitTrailingPrice) +
+       ', "price_aux_limit": ' + str.tostring(lastExitTrailingPrice) +
        '}'
     webhookAlert.sendMessage(jsonMessage)
     sendExitUpdateWebhook := false
@@ -377,7 +382,7 @@ msg := msg +
    "\n Last Message:" + 
    "\n " + jsonMessage +
    "\n ===========================================" +
-   "\n TrailingVBounce V3.3.1 "
+   "\n TrailingVBounce V3.3.3 "
 
 // Set text color based on current bar
 textColor = (bar_index == ta.highest(bar_index, 1)) ? color.white : color.gray
